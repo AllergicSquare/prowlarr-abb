@@ -69,7 +69,7 @@ public class AudioBookBay : TorrentIndexerBase<NoAuthTorrentBaseSettings>
 
     public override IIndexerRequestGenerator GetRequestGenerator()
     {
-        return new AudioBookBayRequestGenerator(Settings, Capabilities);
+        return new AudioBookBayRequestGenerator(Settings);
     }
 
     public override IParseIndexerResponse GetParser()
@@ -183,13 +183,19 @@ public class AudioBookBay : TorrentIndexerBase<NoAuthTorrentBaseSettings>
 
 public class AudioBookBayRequestGenerator : IIndexerRequestGenerator
 {
-    private readonly NoAuthTorrentBaseSettings _settings;
-    private readonly IndexerCapabilities _capabilities;
+    private static readonly Regex StandardizeDashesRegex = new(@"[\p{Pd}\u2212]+", RegexOptions.Compiled);
+    private static readonly Regex StandardizeSlashRegex = new(@"[\u2044\u2215]+", RegexOptions.Compiled);
+    private static readonly Regex StandardizeSingleQuotesRegex = new(@"[\u0060\u00B4\u2018\u2019\u201B\u02BC\uFF07]", RegexOptions.Compiled);
+    private static readonly Regex StandardizeDoubleQuotesRegex = new(@"[""\u201C\u201D\u201E\u201F\u00AB\u00BB\uFF02]+", RegexOptions.Compiled);
+    private static readonly Regex NormalizeSeparatorsRegex = new(@"[/:&\\]+", RegexOptions.Compiled);
+    private static readonly Regex StripDisallowedCharactersRegex = new(@"[^\p{L}\p{N}\s\-\._\(\)@/'\[\]\+%\*#""]+", RegexOptions.Compiled);
+    private static readonly Regex CollapseWhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
 
-    public AudioBookBayRequestGenerator(NoAuthTorrentBaseSettings settings, IndexerCapabilities capabilities)
+    private readonly NoAuthTorrentBaseSettings _settings;
+
+    public AudioBookBayRequestGenerator(NoAuthTorrentBaseSettings settings)
     {
         _settings = settings;
-        _capabilities = capabilities;
     }
 
     public IndexerPageableRequestChain GetSearchRequests(MovieSearchCriteria searchCriteria)
@@ -211,7 +217,7 @@ public class AudioBookBayRequestGenerator : IIndexerRequestGenerator
     {
         var pageableRequests = new IndexerPageableRequestChain();
 
-        pageableRequests.Add(GetPagedRequests($"{searchCriteria.SanitizedSearchTerm}"));
+        pageableRequests.Add(GetPagedRequests(searchCriteria.SearchTerm ?? string.Empty));
 
         return pageableRequests;
     }
@@ -220,7 +226,7 @@ public class AudioBookBayRequestGenerator : IIndexerRequestGenerator
     {
         var pageableRequests = new IndexerPageableRequestChain();
 
-        pageableRequests.Add(GetPagedRequests($"{searchCriteria.SanitizedSearchTerm}"));
+        pageableRequests.Add(GetPagedRequests(searchCriteria.SearchTerm ?? string.Empty));
 
         return pageableRequests;
     }
@@ -231,7 +237,7 @@ public class AudioBookBayRequestGenerator : IIndexerRequestGenerator
 
         var parameters = new NameValueCollection();
 
-        term = Regex.Replace(term, @"[\W]+", " ").Trim().ToLower();
+        term = NormalizeSearchTerm(term);
 
         if (term.IsNotNullOrWhiteSpace())
         {
@@ -247,6 +253,22 @@ public class AudioBookBayRequestGenerator : IIndexerRequestGenerator
         yield return new IndexerRequest(new UriBuilder(searchUrl) { Path = "/" }.Uri.AbsoluteUri, HttpAccept.Html);
         yield return new IndexerRequest(new UriBuilder(searchUrl) { Path = "/page/2/" }.Uri.AbsoluteUri, HttpAccept.Html);
         yield return new IndexerRequest(new UriBuilder(searchUrl) { Path = "/page/3/" }.Uri.AbsoluteUri, HttpAccept.Html);
+    }
+
+    private static string NormalizeSearchTerm(string term)
+    {
+        term ??= string.Empty;
+
+        term = StandardizeDashesRegex.Replace(term, "-");
+        term = StandardizeSlashRegex.Replace(term, "/");
+        term = StandardizeSingleQuotesRegex.Replace(term, "'");
+        term = StandardizeDoubleQuotesRegex.Replace(term, "\"");
+        term = term.ToLowerInvariant();
+        term = NormalizeSeparatorsRegex.Replace(term, " ");
+        term = StripDisallowedCharactersRegex.Replace(term, " ");
+        term = CollapseWhitespaceRegex.Replace(term, " ").Trim();
+
+        return term;
     }
 
     public Func<IDictionary<string, string>> GetCookies { get; set; }
