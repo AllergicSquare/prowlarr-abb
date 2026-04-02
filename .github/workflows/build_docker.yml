@@ -74,7 +74,7 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: bitlessbyte/prowlarr
+        images: pawliner/prowlarr-abb
         tags: |
           type=raw,value=${{ matrix.tag_config.tag_name }}-${{ matrix.architecture }}
 
@@ -136,7 +136,7 @@ jobs:
       if: steps.should-build.outputs.should_build == 'true'
       run: |
         set -euo pipefail
-        IMAGE_NAME="bitlessbyte/prowlarr"
+        IMAGE_NAME="pawliner/prowlarr-abb"
         TAG_NAME="${{ matrix.tag_name }}"
 
         # Ensure both arch images exist in the registry
@@ -152,7 +152,7 @@ jobs:
     - name: Verify multi-arch manifest
       if: steps.should-build.outputs.should_build == 'true'
       run: |
-        IMAGE_NAME="bitlessbyte/prowlarr"
+        IMAGE_NAME="pawliner/prowlarr-abb"
         TAG_NAME="${{ matrix.tag_name }}"
         echo "Published manifest for $IMAGE_NAME:$TAG_NAME"
         docker buildx imagetools inspect "$IMAGE_NAME:$TAG_NAME"
