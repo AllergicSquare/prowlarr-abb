@@ -22,6 +22,8 @@ namespace NzbDrone.Core.Indexers.Definitions;
 
 public class AudioBookBay : TorrentIndexerBase<NoAuthTorrentBaseSettings>
 {
+    private const string PhpSessionCookie = "PHPSESSID";
+
     public override string Name => "AudioBook Bay";
     public override string[] IndexerUrls => new[]
     {
@@ -108,6 +110,61 @@ public class AudioBookBay : TorrentIndexerBase<NoAuthTorrentBaseSettings>
         return await base.Download(new Uri(magnet));
     }
 
+    protected override async Task<IndexerQueryResult> FetchPage(IndexerRequest request, IParseIndexerResponse parser)
+    {
+        var response = await FetchIndexerResponse(request);
+
+        if (ShouldRetryWithFreshSession(request, response))
+        {
+            var hadSessionCookie = Cookies != null && Cookies.ContainsKey(PhpSessionCookie);
+            _logger.Debug("ABB search response contained no result rows for {0} using {1}cached session cookie. Refreshing session cookie and retrying once.",
+                request.Url.FullUri,
+                hadSessionCookie ? "an existing " : "no ");
+
+            var refreshedSession = await TryRefreshSessionCookie();
+            if (refreshedSession)
+            {
+                ModifyRequest(request);
+                response = await FetchIndexerResponse(request);
+
+                if (ShouldRetryWithFreshSession(request, response))
+                {
+                    _logger.Debug("ABB search retry still contained no result rows for {0} after refreshing the session cookie.", request.Url.FullUri);
+                }
+                else
+                {
+                    _logger.Debug("ABB search retry succeeded for {0} after refreshing the session cookie.", request.Url.FullUri);
+                }
+            }
+            else
+            {
+                _logger.Debug("ABB session refresh did not produce a usable {0} cookie for {1}.", PhpSessionCookie, request.Url.FullUri);
+            }
+        }
+
+        try
+        {
+            var releases = parser.ParseResponse(response).ToList();
+
+            if (releases.Count == 0)
+            {
+                _logger.Trace("No releases found. Response: {0}", response.Content);
+            }
+
+            return new IndexerQueryResult
+            {
+                Releases = releases,
+                Response = response.HttpResponse
+            };
+        }
+        catch (Exception ex)
+        {
+            ex.WithData(response.HttpResponse, 128 * 1024);
+            _logger.Trace("Unexpected Response content ({0} bytes): {1}", response.HttpResponse.ResponseData.Length, response.HttpResponse.Content);
+            throw;
+        }
+    }
+
     private IndexerCapabilities SetCapabilities()
     {
         var caps = new IndexerCapabilities
@@ -179,6 +236,65 @@ public class AudioBookBay : TorrentIndexerBase<NoAuthTorrentBaseSettings>
 
         return caps;
     }
+
+    private static bool IsSearchRequestWithTerm(HttpUri url)
+    {
+        return url?.Query.IsNotNullOrWhiteSpace() == true && Regex.IsMatch(url.Query, @"(?:^|&)s=[^&]+", RegexOptions.Compiled);
+    }
+
+    private static bool IsFirstSearchPage(HttpUri url)
+    {
+        return url?.Path.IsNullOrWhiteSpace() != false || url.Path.Equals("/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool ShouldRetryWithFreshSession(IndexerRequest request, IndexerResponse response)
+    {
+        return IsSearchRequestWithTerm(request.Url) &&
+               IsFirstSearchPage(request.Url) &&
+               !AudioBookBayParser.HasResultRows(response.Content);
+    }
+
+    private async Task<bool> TryRefreshSessionCookie()
+    {
+        try
+        {
+            var bootstrapRequest = new HttpRequestBuilder(new UriBuilder(Settings.BaseUrl) { Path = "/" }.Uri.AbsoluteUri)
+                .Accept(HttpAccept.Html)
+                .Build();
+
+            bootstrapRequest.RateLimit = RateLimit;
+            bootstrapRequest.Encoding ??= Encoding;
+            bootstrapRequest.SuppressHttpError = true;
+
+            if (_configService.LogIndexerResponse)
+            {
+                bootstrapRequest.LogResponseContent = true;
+            }
+
+            _logger.Debug("Refreshing ABB session cookie via {0}", bootstrapRequest.Url.FullUri);
+
+            var bootstrapResponse = await RetryStrategy
+                .ExecuteAsync(static async (state, _) => await state.HttpClient.ExecuteProxiedAsync(state.Request, state.Definition),
+                    (HttpClient: _httpClient, Request: bootstrapRequest, Definition));
+
+            var cookies = bootstrapResponse.GetCookies();
+            if (cookies == null || !cookies.Any())
+            {
+                _logger.Debug("ABB session bootstrap response did not include any cookies.");
+                return false;
+            }
+
+            UpdateCookies(cookies, DateTime.Now.AddDays(30));
+            _logger.Trace("ABB session bootstrap returned cookies: {0}", string.Join(", ", cookies.Keys.OrderBy(x => x)));
+
+            return cookies.ContainsKey(PhpSessionCookie);
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug(ex, "ABB session bootstrap request failed.");
+            return false;
+        }
+    }
 }
 
 public class AudioBookBayRequestGenerator : IIndexerRequestGenerator
@@ -242,7 +358,7 @@ public class AudioBookBayRequestGenerator : IIndexerRequestGenerator
         if (term.IsNotNullOrWhiteSpace())
         {
             parameters.Set("s", term);
-            parameters.Set("tt", "1");
+            parameters.Set("cat", "undefined,undefined");
         }
 
         if (parameters.Count > 0)
@@ -289,6 +405,12 @@ public class AudioBookBayParser : IParseIndexerResponse
     public IList<ReleaseInfo> ParseResponse(IndexerResponse indexerResponse)
     {
         var releaseInfos = new List<ReleaseInfo>();
+
+        var cookies = indexerResponse.HttpResponse.GetCookies();
+        if (cookies != null && cookies.Any() && CookiesUpdater != null)
+        {
+            CookiesUpdater(cookies, DateTime.Now.AddDays(30));
+        }
 
         var doc = ParseHtmlDocument(indexerResponse.Content);
 
@@ -349,6 +471,12 @@ public class AudioBookBayParser : IParseIndexerResponse
         }
 
         return releaseInfos;
+    }
+
+    internal static bool HasResultRows(string response)
+    {
+        var doc = ParseHtmlDocument(response);
+        return doc.QuerySelector("div.post:has(div[class=\"postTitle\"])") != null;
     }
 
     private static IHtmlDocument ParseHtmlDocument(string response)
