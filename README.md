@@ -214,6 +214,7 @@ Most of this documentation is thanks to the team over at LinuxServer.io
 
 ## Versions
 
+- **04.03.26:** - Added session cookie caching, updated search request building pattern 
 - **04.02.26:** - Redid search normalization, more search queries should now be supported  
 - **08.15.25:** - Created arm64 variant and fixed bug that caused search to error when capital letters were used in the query.
 - **07.07.25:** - Updated Dockerfile so that both Prowlarr's `master` and `develop` (which changes to .net8.0) branches can be built.
